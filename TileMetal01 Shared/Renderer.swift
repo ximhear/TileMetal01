@@ -25,7 +25,10 @@ class Renderer: NSObject, MTKViewDelegate {
     public let device: MTLDevice
     let commandQueue: MTLCommandQueue
     var dynamicUniformBuffer: MTLBuffer
+    
     var pipelineState: MTLRenderPipelineState
+    var pipelineStateFloor: MTLRenderPipelineState
+    
     var depthState: MTLDepthStencilState
     var colorMap: MTLTexture
     
@@ -41,7 +44,8 @@ class Renderer: NSObject, MTKViewDelegate {
     
     var rotation: Float = 0
     
-    var mesh: MTKMesh
+    var boxMesh: MTKMesh
+    var ellipsoidMesh: MTKMesh
     
     init?(metalKitView: MTKView) {
         self.device = metalKitView.device!
@@ -72,6 +76,16 @@ class Renderer: NSObject, MTKViewDelegate {
             return nil
         }
         
+        do {
+            pipelineStateFloor = try Renderer.buildRenderPipelineFloorWithDevice(device: device,
+                                                                       metalKitView: metalKitView,
+                                                                       mtlVertexDescriptor: mtlVertexDescriptor)
+        } catch {
+            print("Unable to compile render pipeline state.  Error info: \(error)")
+            return nil
+        }
+        
+        
         let depthStateDescriptor = MTLDepthStencilDescriptor()
         depthStateDescriptor.depthCompareFunction = MTLCompareFunction.less
         depthStateDescriptor.isDepthWriteEnabled = true
@@ -79,7 +93,13 @@ class Renderer: NSObject, MTKViewDelegate {
         depthState = state
         
         do {
-            mesh = try Renderer.buildMesh(device: device, mtlVertexDescriptor: mtlVertexDescriptor)
+            ellipsoidMesh = try Renderer.buildEllipsoidMesh(device: device, mtlVertexDescriptor: mtlVertexDescriptor)
+        } catch {
+            print("Unable to build MetalKit Mesh. Error info: \(error)")
+            return nil
+        }
+        do {
+            boxMesh = try Renderer.buildBoxMesh(device: device, mtlVertexDescriptor: mtlVertexDescriptor)
         } catch {
             print("Unable to build MetalKit Mesh. Error info: \(error)")
             return nil
@@ -145,17 +165,68 @@ class Renderer: NSObject, MTKViewDelegate {
         return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
     }
     
-    class func buildMesh(device: MTLDevice,
+    class func buildRenderPipelineFloorWithDevice(device: MTLDevice,
+                                             metalKitView: MTKView,
+                                             mtlVertexDescriptor: MTLVertexDescriptor) throws -> MTLRenderPipelineState {
+        /// Build a render state pipeline object
+        
+        let library = device.makeDefaultLibrary()
+        
+        let vertexFunction = library?.makeFunction(name: "vertexShader")
+        let fragmentFunction = library?.makeFunction(name: "fragmentFloorShader")
+        
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.label = "RenderPipeline for floor"
+        pipelineDescriptor.rasterSampleCount = metalKitView.sampleCount
+        pipelineDescriptor.vertexFunction = vertexFunction
+        pipelineDescriptor.fragmentFunction = fragmentFunction
+        pipelineDescriptor.vertexDescriptor = mtlVertexDescriptor
+        
+        pipelineDescriptor.colorAttachments[0].pixelFormat = metalKitView.colorPixelFormat
+        pipelineDescriptor.depthAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
+        pipelineDescriptor.stencilAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
+        
+        return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+    }
+    
+    class func buildBoxMesh(device: MTLDevice,
                          mtlVertexDescriptor: MTLVertexDescriptor) throws -> MTKMesh {
         /// Create and condition mesh data to feed into a pipeline using the given vertex descriptor
         
         let metalAllocator = MTKMeshBufferAllocator(device: device)
         
-        let mdlMesh = MDLMesh.newBox(withDimensions: SIMD3<Float>(4, 4, 4),
+        let mdlMesh = MDLMesh.newBox(withDimensions: SIMD3<Float>(1, 1, 1),
                                      segments: SIMD3<UInt32>(2, 2, 2),
                                      geometryType: MDLGeometryType.triangles,
                                      inwardNormals:false,
                                      allocator: metalAllocator)
+        
+        let mdlVertexDescriptor = MTKModelIOVertexDescriptorFromMetal(mtlVertexDescriptor)
+        
+        guard let attributes = mdlVertexDescriptor.attributes as? [MDLVertexAttribute] else {
+            throw RendererError.badVertexDescriptor
+        }
+        attributes[VertexAttribute.position.rawValue].name = MDLVertexAttributePosition
+        attributes[VertexAttribute.texcoord.rawValue].name = MDLVertexAttributeTextureCoordinate
+        
+        mdlMesh.vertexDescriptor = mdlVertexDescriptor
+        
+        return try MTKMesh(mesh:mdlMesh, device:device)
+    }
+    
+    class func buildEllipsoidMesh(device: MTLDevice,
+                         mtlVertexDescriptor: MTLVertexDescriptor) throws -> MTKMesh {
+        /// Create and condition mesh data to feed into a pipeline using the given vertex descriptor
+        
+        let metalAllocator = MTKMeshBufferAllocator(device: device)
+        
+        let mdlMesh = MDLMesh.newEllipsoid(withRadii: vector_float3(1, 1, 1),
+                                           radialSegments: 36,
+                                           verticalSegments: 20,
+                                           geometryType: .triangles,
+                                           inwardNormals: false,
+                                           hemisphere: false,
+                                           allocator: metalAllocator)
         
         let mdlVertexDescriptor = MTKModelIOVertexDescriptorFromMetal(mtlVertexDescriptor)
         
@@ -203,10 +274,10 @@ class Renderer: NSObject, MTKViewDelegate {
         
         uniforms[0].projectionMatrix = projectionMatrix
         
-        let rotationAxis = SIMD3<Float>(1, 1, 0)
-        let modelMatrix = matrix4x4_rotation(radians: rotation, axis: rotationAxis)
-        let viewMatrix = matrix4x4_translation(0.0, 0.0, -8.0)
-        uniforms[0].modelViewMatrix = simd_mul(viewMatrix, modelMatrix)
+        let rotationAxis = SIMD3<Float>(0, 1, 0)
+        let rotationMatrix = matrix4x4_rotation(radians: rotation, axis: rotationAxis)
+        let viewMatrix = rotation * matrix4x4_translation(0.0, 0.0, 18.0) * rotationMatrix
+        uniforms[0].viewMatrix = viewMatrix
         rotation += 0.01
     }
     
@@ -235,7 +306,6 @@ class Renderer: NSObject, MTKViewDelegate {
                 /// Final pass rendering code here
                 renderEncoder.label = "Primary Render Encoder"
                 
-                renderEncoder.pushDebugGroup("Draw Box")
                 
                 renderEncoder.setCullMode(.back)
                 
@@ -248,29 +318,27 @@ class Renderer: NSObject, MTKViewDelegate {
                 renderEncoder.setVertexBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
                 renderEncoder.setFragmentBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
                 
-                for (index, element) in mesh.vertexDescriptor.layouts.enumerated() {
-                    guard let layout = element as? MDLVertexBufferLayout else {
-                        return
-                    }
-                    
-                    if layout.stride != 0 {
-                        let buffer = mesh.vertexBuffers[index]
-                        renderEncoder.setVertexBuffer(buffer.buffer, offset:buffer.offset, index: index)
-                    }
-                }
-                
-                renderEncoder.setFragmentTexture(colorMap, index: TextureIndex.color.rawValue)
-                
-                for submesh in mesh.submeshes {
-                    renderEncoder.drawIndexedPrimitives(type: submesh.primitiveType,
-                                                        indexCount: submesh.indexCount,
-                                                        indexType: submesh.indexType,
-                                                        indexBuffer: submesh.indexBuffer.buffer,
-                                                        indexBufferOffset: submesh.indexBuffer.offset)
-                    
-                }
-                
+                renderEncoder.pushDebugGroup("Draw Box1")
+                drawBox(modelMatrix: .init(scaling: [1, 3, 1]), renderEncoder: renderEncoder)
                 renderEncoder.popDebugGroup()
+                
+                renderEncoder.pushDebugGroup("Draw Box2")
+                var m = float4x4(translation: [-4, 0, 9]) * float4x4(scaling: [2, 1, 1])
+                drawBox(modelMatrix: m, renderEncoder: renderEncoder)
+                renderEncoder.popDebugGroup()
+                
+                renderEncoder.pushDebugGroup("Draw Ellipsoid")
+                m = float4x4(translation: [8, 2, 0]) * float4x4(scaling: [1, 3, 2])
+                drawEllipsoid(modelMatrix: m, renderEncoder: renderEncoder)
+                renderEncoder.popDebugGroup()
+ 
+                
+                renderEncoder.pushDebugGroup("Draw floor")
+                renderEncoder.setRenderPipelineState(pipelineStateFloor)
+                m = float4x4(translation: [0, -2, 0]) * float4x4.init(scaling: [20, 0.1, 20])
+                drawBox(modelMatrix: m, renderEncoder: renderEncoder)
+                renderEncoder.popDebugGroup()
+                
                 
                 renderEncoder.endEncoding()
                 
@@ -283,11 +351,56 @@ class Renderer: NSObject, MTKViewDelegate {
         }
     }
     
+    func drawBox(modelMatrix: float4x4, renderEncoder: MTLRenderCommandEncoder) {
+        let mu = ModelUniforms(modelMatrix: modelMatrix)
+        withUnsafePointer(to: mu) { up in
+            renderEncoder.setVertexBytes(up,
+                                         length: MemoryLayout<ModelUniforms>.stride,
+                                         index: BufferIndex.modelUniforms.rawValue)
+        }
+        drawMesh(mesh: boxMesh, renderEncoder: renderEncoder)
+    }
+    
+    func drawEllipsoid(modelMatrix: float4x4, renderEncoder: MTLRenderCommandEncoder) {
+        let mu = ModelUniforms(modelMatrix: modelMatrix)
+        withUnsafePointer(to: mu) { up in
+            renderEncoder.setVertexBytes(up,
+                                         length: MemoryLayout<ModelUniforms>.stride,
+                                         index: BufferIndex.modelUniforms.rawValue)
+        }
+        drawMesh(mesh: ellipsoidMesh, renderEncoder: renderEncoder)
+    }
+    
+    func drawMesh(mesh: MTKMesh, renderEncoder: MTLRenderCommandEncoder) {
+            for (index, element) in mesh.vertexDescriptor.layouts.enumerated() {
+            guard let layout = element as? MDLVertexBufferLayout else {
+                return
+            }
+            
+            if layout.stride != 0 {
+                let buffer = mesh.vertexBuffers[index]
+                renderEncoder.setVertexBuffer(buffer.buffer, offset:buffer.offset, index: index)
+            }
+        }
+        
+        renderEncoder.setFragmentTexture(colorMap, index: TextureIndex.color.rawValue)
+        
+        for submesh in mesh.submeshes {
+            renderEncoder.drawIndexedPrimitives(
+                type: submesh.primitiveType,
+                indexCount: submesh.indexCount,
+                indexType: submesh.indexType,
+                indexBuffer: submesh.indexBuffer.buffer,
+                indexBufferOffset: submesh.indexBuffer.offset)
+        }
+    }
+    
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         /// Respond to drawable size or orientation changes here
         
         let aspect = Float(size.width) / Float(size.height)
-        projectionMatrix = matrix_perspective_right_hand(fovyRadians: radians_from_degrees(65), aspectRatio:aspect, nearZ: 0.1, farZ: 100.0)
+        projectionMatrix = float4x4(projectionFov: radians_from_degrees(65), near: 0.1, far: 100.0, aspect: aspect, lhs: true)
+//        projectionMatrix = matrix_perspective_right_hand(fovyRadians: radians_from_degrees(65), aspectRatio:aspect, nearZ: 0.1, farZ: 100.0)
     }
 }
 

@@ -22,6 +22,10 @@
 		EC269D492A7D5B950072B78C /* ShaderTypes.h in Resources */ = {isa = PBXBuildFile; fileRef = EC269D232A7D5B930072B78C /* ShaderTypes.h */; };
 		EC269D4A2A7D5B950072B78C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EC269D242A7D5B950072B78C /* Assets.xcassets */; };
 		EC269D4B2A7D5B950072B78C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EC269D242A7D5B950072B78C /* Assets.xcassets */; };
+		EC269D552A7D62B90072B78C /* MathLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC269D542A7D62B90072B78C /* MathLibrary.swift */; };
+		EC269D562A7D62B90072B78C /* MathLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC269D542A7D62B90072B78C /* MathLibrary.swift */; };
+		EC269D582A7D65CC0072B78C /* GZLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC269D572A7D65CC0072B78C /* GZLog.swift */; };
+		EC269D592A7D65CC0072B78C /* GZLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC269D572A7D65CC0072B78C /* GZLog.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +43,8 @@
 		EC269D3E2A7D5B950072B78C /* GameViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameViewController.swift; sourceTree = "<group>"; };
 		EC269D412A7D5B950072B78C /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		EC269D432A7D5B950072B78C /* TileMetal01_macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TileMetal01_macOS.entitlements; sourceTree = "<group>"; };
+		EC269D542A7D62B90072B78C /* MathLibrary.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MathLibrary.swift; sourceTree = "<group>"; };
+		EC269D572A7D65CC0072B78C /* GZLog.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = GZLog.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -72,6 +78,8 @@
 		EC269D202A7D5B920072B78C /* TileMetal01 Shared */ = {
 			isa = PBXGroup;
 			children = (
+				EC269D542A7D62B90072B78C /* MathLibrary.swift */,
+				EC269D572A7D65CC0072B78C /* GZLog.swift */,
 				EC269D212A7D5B930072B78C /* Shaders.metal */,
 				EC269D222A7D5B930072B78C /* Renderer.swift */,
 				EC269D232A7D5B930072B78C /* ShaderTypes.h */,
@@ -215,9 +223,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				EC269D462A7D5B950072B78C /* Renderer.swift in Sources */,
+				EC269D582A7D65CC0072B78C /* GZLog.swift in Sources */,
 				EC269D442A7D5B950072B78C /* Shaders.metal in Sources */,
 				EC269D2F2A7D5B950072B78C /* GameViewController.swift in Sources */,
 				EC269D2D2A7D5B950072B78C /* AppDelegate.swift in Sources */,
+				EC269D552A7D62B90072B78C /* MathLibrary.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -226,9 +236,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				EC269D472A7D5B950072B78C /* Renderer.swift in Sources */,
+				EC269D592A7D65CC0072B78C /* GZLog.swift in Sources */,
 				EC269D452A7D5B950072B78C /* Shaders.metal in Sources */,
 				EC269D3F2A7D5B950072B78C /* GameViewController.swift in Sources */,
 				EC269D3D2A7D5B950072B78C /* AppDelegate.swift in Sources */,
+				EC269D562A7D62B90072B78C /* MathLibrary.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
