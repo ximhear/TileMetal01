@@ -28,9 +28,12 @@ class Renderer: NSObject, MTKViewDelegate {
     
     var pipelineState: MTLRenderPipelineState
     var pipelineStateFloor: MTLRenderPipelineState
+    var shadowPipelineState: MTLRenderPipelineState
     
     var depthState: MTLDepthStencilState
     var colorMap: MTLTexture
+    var floorMap: MTLTexture
+    var pinkMap: MTLTexture
     
     let inFlightSemaphore = DispatchSemaphore(value: maxBuffersInFlight)
     
@@ -41,11 +44,15 @@ class Renderer: NSObject, MTKViewDelegate {
     var uniforms: UnsafeMutablePointer<Uniforms>
     
     var projectionMatrix: matrix_float4x4 = matrix_float4x4()
+    var shadowProjectionMatrix: matrix_float4x4 = matrix_float4x4()
     
     var rotation: Float = 0
     
     var boxMesh: MTKMesh
     var ellipsoidMesh: MTKMesh
+    
+    var sunPosition: float3 = [0, 10, -1.0]
+    var shadowTexture: MTLTexture?
     
     init?(metalKitView: MTKView) {
         self.device = metalKitView.device!
@@ -85,6 +92,14 @@ class Renderer: NSObject, MTKViewDelegate {
             return nil
         }
         
+        do {
+            shadowPipelineState = try Renderer.buildRenderPipelineShadowWithDevice(device: device,
+                                                                       metalKitView: metalKitView,
+                                                                       mtlVertexDescriptor: mtlVertexDescriptor)
+        } catch {
+            print("Unable to compile render pipeline state.  Error info: \(error)")
+            return nil
+        }
         
         let depthStateDescriptor = MTLDepthStencilDescriptor()
         depthStateDescriptor.depthCompareFunction = MTLCompareFunction.less
@@ -107,6 +122,8 @@ class Renderer: NSObject, MTKViewDelegate {
         
         do {
             colorMap = try Renderer.loadTexture(device: device, textureName: "ColorMap")
+            floorMap = try Renderer.loadTexture(device: device, textureName: "Floor")
+            pinkMap = try Renderer.loadTexture(device: device, textureName: "Pink")
         } catch {
             print("Unable to load texture. Error info: \(error)")
             return nil
@@ -114,6 +131,15 @@ class Renderer: NSObject, MTKViewDelegate {
         
         super.init()
         
+    }
+    
+    class func makeTexture(device: MTLDevice, width: CGFloat, height: CGFloat, pixelFormat: MTLPixelFormat, usage: MTLTextureUsage, storageMode: MTLStorageMode) -> MTLTexture? {
+        
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: Int(width), height: Int(height), mipmapped: false)
+        descriptor.usage = usage
+        descriptor.storageMode = storageMode
+        
+        return device.makeTexture(descriptor: descriptor)
     }
     
     class func buildMetalVertexDescriptor() -> MTLVertexDescriptor {
@@ -139,6 +165,26 @@ class Renderer: NSObject, MTKViewDelegate {
         mtlVertexDescriptor.layouts[BufferIndex.meshGenerics.rawValue].stepFunction = MTLVertexStepFunction.perVertex
         
         return mtlVertexDescriptor
+    }
+    
+    class func buildRenderPipelineShadowWithDevice(device: MTLDevice,
+                                             metalKitView: MTKView,
+                                             mtlVertexDescriptor: MTLVertexDescriptor) throws -> MTLRenderPipelineState {
+        /// Build a render state pipeline object
+        
+        let library = device.makeDefaultLibrary()
+        
+        let vertexFunction = library?.makeFunction(name: "vertexShadowShader")
+        
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.label = "RenderPipeline for shadow"
+        pipelineDescriptor.vertexFunction = vertexFunction
+        pipelineDescriptor.vertexDescriptor = mtlVertexDescriptor
+        
+        pipelineDescriptor.colorAttachments[0].pixelFormat = .invalid
+        pipelineDescriptor.depthAttachmentPixelFormat = .depth32Float
+        
+        return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
     }
     
     class func buildRenderPipelineWithDevice(device: MTLDevice,
@@ -274,12 +320,12 @@ class Renderer: NSObject, MTKViewDelegate {
         
         uniforms[0].projectionMatrix = projectionMatrix
         
-        let rotationAxis = SIMD3<Float>(0, 1, 0)
-        let rotationMatrix = matrix4x4_rotation(radians: rotation, axis: rotationAxis)
-        let viewMatrix = matrix4x4_translation(0.0, 0.0, 18.0) * rotationMatrix
+        let viewMatrix = matrix4x4_translation(0.0, 0.0, 18.0)
         uniforms[0].viewMatrix = viewMatrix
         rotation += 0.01
-//        rotation = .pi / 6.0
+        
+        uniforms[0].shadowProjectionMatrix = shadowProjectionMatrix
+        uniforms[0].shadowViewMatrix = float4x4(eye: sunPosition, center: [0, 0, 0], up: [0, 1, 0])
     }
     
     func draw(in view: MTKView) {
@@ -297,6 +343,22 @@ class Renderer: NSObject, MTKViewDelegate {
             self.updateDynamicBufferState()
             
             self.updateGameState()
+            
+            // shadow pipeline
+            let shadowPassDescriptor = MTLRenderPassDescriptor()
+            shadowPassDescriptor.depthAttachment.texture = shadowTexture
+            shadowPassDescriptor.depthAttachment.loadAction = .clear
+            shadowPassDescriptor.depthAttachment.storeAction = .store
+            
+            if let shadowEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: shadowPassDescriptor) {
+                shadowEncoder.setRenderPipelineState(shadowPipelineState)
+                shadowEncoder.setDepthStencilState(depthState)
+                shadowEncoder.setVertexBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
+                shadowEncoder.setFragmentBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
+                
+                drawScene(renderEncoder: shadowEncoder, showFloor: false)
+                shadowEncoder.endEncoding()
+            }
             
             /// Delay getting the currentRenderPassDescriptor until we absolutely need it to avoid
             ///   holding onto the drawable and blocking the display pipeline any longer than necessary
@@ -318,28 +380,15 @@ class Renderer: NSObject, MTKViewDelegate {
                 
                 renderEncoder.setVertexBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
                 renderEncoder.setFragmentBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
+                renderEncoder.setFragmentTexture(shadowTexture, index: TextureIndex.shadow.rawValue)
                 
-                renderEncoder.pushDebugGroup("Draw Box1")
-                drawBox(modelMatrix: .init(scaling: [1, 3, 1]), renderEncoder: renderEncoder)
-                renderEncoder.popDebugGroup()
+                drawScene(renderEncoder: renderEncoder, showFloor: true)
                 
-                renderEncoder.pushDebugGroup("Draw Box2")
-                var m = float4x4(translation: [-4, 0, 9]) * float4x4(scaling: [2, 1, 1])
-                drawBox(modelMatrix: m, renderEncoder: renderEncoder)
-                renderEncoder.popDebugGroup()
-                
-                renderEncoder.pushDebugGroup("Draw Ellipsoid")
-                m = float4x4(translation: [8, 2, 0]) * float4x4(scaling: [1, 3, 2])
-                drawEllipsoid(modelMatrix: m, renderEncoder: renderEncoder)
+                renderEncoder.pushDebugGroup("Draw light")
+                let m = float4x4(translation: sunPosition)
+                drawBox(modelMatrix: m, renderEncoder: renderEncoder, texture: pinkMap)
                 renderEncoder.popDebugGroup()
  
-                
-                renderEncoder.pushDebugGroup("Draw floor")
-                renderEncoder.setRenderPipelineState(pipelineStateFloor)
-                m = float4x4(translation: [0, -2, 0]) * float4x4.init(scaling: [20, 0.1, 20])
-                drawBox(modelMatrix: m, renderEncoder: renderEncoder)
-                renderEncoder.popDebugGroup()
-                
                 
                 renderEncoder.endEncoding()
                 
@@ -352,27 +401,58 @@ class Renderer: NSObject, MTKViewDelegate {
         }
     }
     
-    func drawBox(modelMatrix: float4x4, renderEncoder: MTLRenderCommandEncoder) {
+    func drawScene(renderEncoder: MTLRenderCommandEncoder, showFloor: Bool) {
+        let rotationAxis = SIMD3<Float>(0, 1, 0)
+        let rotationMatrix = matrix4x4_rotation(radians: rotation, axis: rotationAxis)
+        
+        renderEncoder.pushDebugGroup("Draw Box1")
+        drawBox(modelMatrix: rotationMatrix * float4x4(translation: [0, 2, 0]) * float4x4.init(scaling: [1, 1, 1]), renderEncoder: renderEncoder, texture: colorMap)
+        renderEncoder.popDebugGroup()
+        
+        renderEncoder.pushDebugGroup("Draw Box2")
+        var m = rotationMatrix * float4x4(translation: [-4, 0, 9]) * float4x4(scaling: [2, 1, 1])
+        drawBox(modelMatrix: m, renderEncoder: renderEncoder, texture: colorMap)
+        renderEncoder.popDebugGroup()
+        
+        renderEncoder.pushDebugGroup("Draw Ellipsoid")
+        m = rotationMatrix * float4x4(translation: [8, 2, 0]) * float4x4(scaling: [1, 3, 2])
+        drawEllipsoid(modelMatrix: m, renderEncoder: renderEncoder, texture: pinkMap)
+        renderEncoder.popDebugGroup()
+        
+        
+        if showFloor {
+            renderEncoder.pushDebugGroup("Draw floor")
+            //        renderEncoder.setRenderPipelineState(pipelineStateFloor)
+            m = rotationMatrix * float4x4(translation: [0, -2, 0]) * float4x4.init(scaling: [20, 0.1, 20])
+            drawBox(modelMatrix: m, renderEncoder: renderEncoder, texture: floorMap)
+            renderEncoder.popDebugGroup()
+        }
+    }
+    
+    func drawBox(modelMatrix: float4x4, renderEncoder: MTLRenderCommandEncoder, texture: MTLTexture?) {
+        let mu = ModelUniforms(modelMatrix: modelMatrix)
+        withUnsafePointer(to: mu) { up in
+            renderEncoder.setVertexBytes(up,
+                                         length: MemoryLayout<ModelUniforms>.stride,
+                                         index: BufferIndex.modelUniforms.rawValue)
+            renderEncoder.setFragmentBytes(up,
+                                         length: MemoryLayout<ModelUniforms>.stride,
+                                         index: BufferIndex.modelUniforms.rawValue)
+        }
+        drawMesh(mesh: boxMesh, renderEncoder: renderEncoder, texture: texture)
+    }
+    
+    func drawEllipsoid(modelMatrix: float4x4, renderEncoder: MTLRenderCommandEncoder, texture: MTLTexture?) {
         let mu = ModelUniforms(modelMatrix: modelMatrix)
         withUnsafePointer(to: mu) { up in
             renderEncoder.setVertexBytes(up,
                                          length: MemoryLayout<ModelUniforms>.stride,
                                          index: BufferIndex.modelUniforms.rawValue)
         }
-        drawMesh(mesh: boxMesh, renderEncoder: renderEncoder)
+        drawMesh(mesh: ellipsoidMesh, renderEncoder: renderEncoder, texture: texture)
     }
     
-    func drawEllipsoid(modelMatrix: float4x4, renderEncoder: MTLRenderCommandEncoder) {
-        let mu = ModelUniforms(modelMatrix: modelMatrix)
-        withUnsafePointer(to: mu) { up in
-            renderEncoder.setVertexBytes(up,
-                                         length: MemoryLayout<ModelUniforms>.stride,
-                                         index: BufferIndex.modelUniforms.rawValue)
-        }
-        drawMesh(mesh: ellipsoidMesh, renderEncoder: renderEncoder)
-    }
-    
-    func drawMesh(mesh: MTKMesh, renderEncoder: MTLRenderCommandEncoder) {
+    func drawMesh(mesh: MTKMesh, renderEncoder: MTLRenderCommandEncoder, texture: MTLTexture?) {
             for (index, element) in mesh.vertexDescriptor.layouts.enumerated() {
             guard let layout = element as? MDLVertexBufferLayout else {
                 return
@@ -384,7 +464,8 @@ class Renderer: NSObject, MTKViewDelegate {
             }
         }
         
-        renderEncoder.setFragmentTexture(colorMap, index: TextureIndex.color.rawValue)
+        
+        renderEncoder.setFragmentTexture(texture, index: TextureIndex.color.rawValue)
         
         for submesh in mesh.submeshes {
             renderEncoder.drawIndexedPrimitives(
@@ -401,7 +482,9 @@ class Renderer: NSObject, MTKViewDelegate {
         
         let aspect = Float(size.width) / Float(size.height)
         projectionMatrix = float4x4(projectionFov: radians_from_degrees(65), near: 0.1, far: 100.0, aspect: aspect, lhs: true)
-//        projectionMatrix = matrix_perspective_right_hand(fovyRadians: radians_from_degrees(65), aspectRatio:aspect, nearZ: 0.1, farZ: 100.0)
+        
+        shadowProjectionMatrix = orthographicMatrix(left: -20, right: 20, bottom: -5, top: 10, near: 0.01, far: 100)
+        shadowTexture = Self.makeTexture(device: device, width: 2048, height: 2048, pixelFormat: .depth32Float, usage: [.shaderRead, .renderTarget], storageMode: .private)
     }
 }
 
@@ -437,4 +520,23 @@ func matrix_perspective_right_hand(fovyRadians fovy: Float, aspectRatio: Float, 
 
 func radians_from_degrees(_ degrees: Float) -> Float {
     return (degrees / 180) * .pi
+}
+
+func orthographicMatrix(left: Float, right: Float, bottom: Float, top: Float, near: Float, far: Float) -> float4x4 {
+    let scaleX = 2.0 / (right - left)
+    let scaleY = 2.0 / (top - bottom)
+    let scaleZ = 1.0 / (far - near)
+
+    let translationX = (right + left) / (left - right)
+    let translationY = (top + bottom) / (bottom - top)
+    let translationZ = near / (near - far)
+
+    let matrix = float4x4([
+        simd_float4(scaleX, 0, 0, 0),
+        simd_float4(0, scaleY, 0, 0),
+        simd_float4(0, 0, scaleZ, 0),
+        simd_float4(translationX, translationY, translationZ, 1)
+    ])
+
+    return matrix
 }
