@@ -84,16 +84,16 @@ fragment float4 fragmentShader(ColorInOut in [[stage_in]],
    
     float v = 0;
     if (position.z > shadow_sample + 0.001) {
-        v = 0.5;
-        return float4(1, 0, 0, 1);
+        v = 0.2;
+//        return float4(1, 0, 0, 1);
     }
     else {
         v = 1.0;
-        return float4(colorSample);
+//        return float4(colorSample);
     }
     
-//    colorSample *= v;
-//    return float4(colorSample.x, colorSample.y, colorSample.z, 1);
+    colorSample *= v;
+    return float4(colorSample.x, colorSample.y, colorSample.z, 1);
 }
 
 fragment float4 fragmentFloorShader(ColorInOut in [[stage_in]],

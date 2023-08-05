@@ -51,7 +51,7 @@ class Renderer: NSObject, MTKViewDelegate {
     var boxMesh: MTKMesh
     var ellipsoidMesh: MTKMesh
     
-    var sunPosition: float3 = [0, 10, -1.0]
+    var sunPosition: float3 = [0, 10, -10.0]
     var shadowTexture: MTLTexture?
     
     init?(metalKitView: MTKView) {
@@ -483,7 +483,17 @@ class Renderer: NSObject, MTKViewDelegate {
         let aspect = Float(size.width) / Float(size.height)
         projectionMatrix = float4x4(projectionFov: radians_from_degrees(65), near: 0.1, far: 100.0, aspect: aspect, lhs: true)
         
-        shadowProjectionMatrix = orthographicMatrix(left: -20, right: 20, bottom: -5, top: 10, near: 0.01, far: 100)
+        var w: Float = 20
+        var h: Float = 20
+        if size.width != 0 && size.height != 0 {
+            if size.width > size.height {
+                w = w * aspect
+            }
+            else {
+                h = h / aspect
+            }
+        }
+        shadowProjectionMatrix = orthographicMatrix(left: -w, right: w, bottom: -h, top: h, near: 0.01, far: 100)
         shadowTexture = Self.makeTexture(device: device, width: 2048, height: 2048, pixelFormat: .depth32Float, usage: [.shaderRead, .renderTarget], storageMode: .private)
     }
 }
