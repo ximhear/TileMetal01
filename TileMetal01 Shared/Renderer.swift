@@ -276,9 +276,10 @@ class Renderer: NSObject, MTKViewDelegate {
         
         let rotationAxis = SIMD3<Float>(0, 1, 0)
         let rotationMatrix = matrix4x4_rotation(radians: rotation, axis: rotationAxis)
-        let viewMatrix = rotation * matrix4x4_translation(0.0, 0.0, 18.0) * rotationMatrix
+        let viewMatrix = matrix4x4_translation(0.0, 0.0, 18.0) * rotationMatrix
         uniforms[0].viewMatrix = viewMatrix
         rotation += 0.01
+//        rotation = .pi / 6.0
     }
     
     func draw(in view: MTKView) {
@@ -307,7 +308,7 @@ class Renderer: NSObject, MTKViewDelegate {
                 renderEncoder.label = "Primary Render Encoder"
                 
                 
-                renderEncoder.setCullMode(.back)
+                renderEncoder.setCullMode(.front)
                 
                 renderEncoder.setFrontFacing(.counterClockwise)
                 
