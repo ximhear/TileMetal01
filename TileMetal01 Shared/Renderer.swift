@@ -27,13 +27,20 @@ class Renderer: NSObject, MTKViewDelegate {
     var dynamicUniformBuffer: MTLBuffer
     
     var pipelineState: MTLRenderPipelineState
+    var quadPipelineState: MTLRenderPipelineState
     var pipelineStateFloor: MTLRenderPipelineState
     var shadowPipelineState: MTLRenderPipelineState
+    var mainPipelineState: MTLRenderPipelineState
     
     var depthState: MTLDepthStencilState
+    var quadDepthState: MTLDepthStencilState
     var colorMap: MTLTexture
     var floorMap: MTLTexture
     var pinkMap: MTLTexture
+    
+    var albedoTexture: MTLTexture!
+    var normalTexture: MTLTexture!
+    var depthTexture: MTLTexture!
     
     let inFlightSemaphore = DispatchSemaphore(value: maxBuffersInFlight)
     
@@ -68,11 +75,20 @@ class Renderer: NSObject, MTKViewDelegate {
         
         uniforms = UnsafeMutableRawPointer(dynamicUniformBuffer.contents()).bindMemory(to:Uniforms.self, capacity:1)
         
-        metalKitView.depthStencilPixelFormat = MTLPixelFormat.depth32Float_stencil8
-        metalKitView.colorPixelFormat = MTLPixelFormat.bgra8Unorm_srgb
+        metalKitView.depthStencilPixelFormat = .depth32Float_stencil8
+        metalKitView.colorPixelFormat = .bgra8Unorm
         metalKitView.sampleCount = 1
         
         let mtlVertexDescriptor = Renderer.buildMetalVertexDescriptor()
+        
+        do {
+            mainPipelineState = try Renderer.buildMainRenderPipelineWithDevice(device: device,
+                                                                       metalKitView: metalKitView,
+                                                                       mtlVertexDescriptor: mtlVertexDescriptor)
+        } catch {
+            print("Unable to compile render pipeline state.  Error info: \(error)")
+            return nil
+        }
         
         do {
             pipelineState = try Renderer.buildRenderPipelineWithDevice(device: device,
@@ -80,6 +96,16 @@ class Renderer: NSObject, MTKViewDelegate {
                                                                        mtlVertexDescriptor: mtlVertexDescriptor)
         } catch {
             print("Unable to compile render pipeline state.  Error info: \(error)")
+            return nil
+        }
+        
+        do {
+            quadPipelineState = try Renderer.buildQuadRenderPipelineWithDevice(device: device,
+                                                                       metalKitView: metalKitView,
+                                                                       mtlVertexDescriptor: nil)
+        } catch {
+            GZLogFunc(error)
+            print("Unable to compile render pipeline state.  Error info: \(error.localizedDescription)")
             return nil
         }
         
@@ -107,6 +133,11 @@ class Renderer: NSObject, MTKViewDelegate {
         guard let state = device.makeDepthStencilState(descriptor:depthStateDescriptor) else { return nil }
         depthState = state
         
+        guard let quadDep = Self.buildQuadDepthStencilState(device: device) else {
+            return nil
+        }
+        quadDepthState = quadDep
+        
         do {
             ellipsoidMesh = try Renderer.buildEllipsoidMesh(device: device, mtlVertexDescriptor: mtlVertexDescriptor)
         } catch {
@@ -133,6 +164,12 @@ class Renderer: NSObject, MTKViewDelegate {
         
     }
     
+    static func buildQuadDepthStencilState(device: MTLDevice) -> MTLDepthStencilState? {
+        let descriptor = MTLDepthStencilDescriptor()
+        descriptor.isDepthWriteEnabled = false
+        return device.makeDepthStencilState(descriptor: descriptor)
+    }
+
     class func makeTexture(device: MTLDevice, width: CGFloat, height: CGFloat, pixelFormat: MTLPixelFormat, usage: MTLTextureUsage, storageMode: MTLStorageMode) -> MTLTexture? {
         
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: Int(width), height: Int(height), mipmapped: false)
@@ -156,6 +193,10 @@ class Renderer: NSObject, MTKViewDelegate {
         mtlVertexDescriptor.attributes[VertexAttribute.texcoord.rawValue].offset = 0
         mtlVertexDescriptor.attributes[VertexAttribute.texcoord.rawValue].bufferIndex = BufferIndex.meshGenerics.rawValue
         
+        mtlVertexDescriptor.attributes[VertexAttribute.normal.rawValue].format = MTLVertexFormat.float3
+        mtlVertexDescriptor.attributes[VertexAttribute.normal.rawValue].offset = 0
+        mtlVertexDescriptor.attributes[VertexAttribute.normal.rawValue].bufferIndex = BufferIndex.normal.rawValue
+        
         mtlVertexDescriptor.layouts[BufferIndex.meshPositions.rawValue].stride = 12
         mtlVertexDescriptor.layouts[BufferIndex.meshPositions.rawValue].stepRate = 1
         mtlVertexDescriptor.layouts[BufferIndex.meshPositions.rawValue].stepFunction = MTLVertexStepFunction.perVertex
@@ -163,6 +204,24 @@ class Renderer: NSObject, MTKViewDelegate {
         mtlVertexDescriptor.layouts[BufferIndex.meshGenerics.rawValue].stride = 8
         mtlVertexDescriptor.layouts[BufferIndex.meshGenerics.rawValue].stepRate = 1
         mtlVertexDescriptor.layouts[BufferIndex.meshGenerics.rawValue].stepFunction = MTLVertexStepFunction.perVertex
+        
+        mtlVertexDescriptor.layouts[BufferIndex.normal.rawValue].stride = 12
+        mtlVertexDescriptor.layouts[BufferIndex.normal.rawValue].stepRate = 1
+        mtlVertexDescriptor.layouts[BufferIndex.normal.rawValue].stepFunction = MTLVertexStepFunction.perVertex
+        
+        return mtlVertexDescriptor
+    }
+    
+    class func buildQuadMetalVertexDescriptor() -> MTLVertexDescriptor {
+        let mtlVertexDescriptor = MTLVertexDescriptor()
+        
+        mtlVertexDescriptor.attributes[VertexAttribute.position.rawValue].format = MTLVertexFormat.float3
+        mtlVertexDescriptor.attributes[VertexAttribute.position.rawValue].offset = 0
+        mtlVertexDescriptor.attributes[VertexAttribute.position.rawValue].bufferIndex = BufferIndex.meshPositions.rawValue
+        
+        mtlVertexDescriptor.layouts[BufferIndex.meshPositions.rawValue].stride = 12
+        mtlVertexDescriptor.layouts[BufferIndex.meshPositions.rawValue].stepRate = 1
+        mtlVertexDescriptor.layouts[BufferIndex.meshPositions.rawValue].stepFunction = MTLVertexStepFunction.perVertex
         
         return mtlVertexDescriptor
     }
@@ -205,6 +264,61 @@ class Renderer: NSObject, MTKViewDelegate {
         pipelineDescriptor.vertexDescriptor = mtlVertexDescriptor
         
         pipelineDescriptor.colorAttachments[0].pixelFormat = metalKitView.colorPixelFormat
+        pipelineDescriptor.depthAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
+        pipelineDescriptor.stencilAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
+        
+        return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+    }
+    
+    class func buildQuadRenderPipelineWithDevice(device: MTLDevice,
+                                             metalKitView: MTKView,
+                                             mtlVertexDescriptor: MTLVertexDescriptor?) throws -> MTLRenderPipelineState {
+        /// Build a render state pipeline object
+        
+        let library = device.makeDefaultLibrary()
+        
+        let vertexFunction = library?.makeFunction(name: "vertexQuad")
+        let fragmentFunction = library?.makeFunction(name: "fragmentQuad")
+        
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.label = "QuadRenderPipeline"
+        pipelineDescriptor.rasterSampleCount = metalKitView.sampleCount
+        pipelineDescriptor.vertexFunction = vertexFunction
+        pipelineDescriptor.fragmentFunction = fragmentFunction
+        pipelineDescriptor.vertexDescriptor = mtlVertexDescriptor
+        
+        GZLogFunc( metalKitView.colorPixelFormat.rawValue)
+        GZLogFunc( metalKitView.depthStencilPixelFormat.rawValue)
+        GZLogFunc()
+        pipelineDescriptor.colorAttachments[0].pixelFormat = metalKitView.colorPixelFormat
+        pipelineDescriptor.colorAttachments[1].pixelFormat = .bgra8Unorm
+        pipelineDescriptor.colorAttachments[2].pixelFormat = .rgba32Float
+        pipelineDescriptor.depthAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
+        pipelineDescriptor.stencilAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
+        
+        return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+    }
+    
+    class func buildMainRenderPipelineWithDevice(device: MTLDevice,
+                                             metalKitView: MTKView,
+                                             mtlVertexDescriptor: MTLVertexDescriptor) throws -> MTLRenderPipelineState {
+        /// Build a render state pipeline object
+        
+        let library = device.makeDefaultLibrary()
+        
+        let vertexFunction = library?.makeFunction(name: "vertexShader")
+        let fragmentFunction = library?.makeFunction(name: "fragmentGShader")
+        
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.label = "MainRenderPipeline"
+        pipelineDescriptor.rasterSampleCount = metalKitView.sampleCount
+        pipelineDescriptor.vertexFunction = vertexFunction
+        pipelineDescriptor.fragmentFunction = fragmentFunction
+        pipelineDescriptor.vertexDescriptor = mtlVertexDescriptor
+        
+        pipelineDescriptor.colorAttachments[0].pixelFormat = metalKitView.colorPixelFormat
+        pipelineDescriptor.colorAttachments[1].pixelFormat = .bgra8Unorm
+        pipelineDescriptor.colorAttachments[2].pixelFormat = .rgba32Float
         pipelineDescriptor.depthAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
         pipelineDescriptor.stencilAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
         
@@ -254,6 +368,7 @@ class Renderer: NSObject, MTKViewDelegate {
         }
         attributes[VertexAttribute.position.rawValue].name = MDLVertexAttributePosition
         attributes[VertexAttribute.texcoord.rawValue].name = MDLVertexAttributeTextureCoordinate
+        attributes[VertexAttribute.normal.rawValue].name = MDLVertexAttributeNormal
         
         mdlMesh.vertexDescriptor = mdlVertexDescriptor
         
@@ -281,6 +396,7 @@ class Renderer: NSObject, MTKViewDelegate {
         }
         attributes[VertexAttribute.position.rawValue].name = MDLVertexAttributePosition
         attributes[VertexAttribute.texcoord.rawValue].name = MDLVertexAttributeTextureCoordinate
+        attributes[VertexAttribute.normal.rawValue].name = MDLVertexAttributeNormal
         
         mdlMesh.vertexDescriptor = mdlVertexDescriptor
         
@@ -322,7 +438,8 @@ class Renderer: NSObject, MTKViewDelegate {
         
         let viewMatrix = matrix4x4_translation(0.0, 0.0, 18.0)
         uniforms[0].viewMatrix = viewMatrix
-        rotation += 0.01
+//        rotation += 0.01
+        rotation = .pi / 1
         
         uniforms[0].shadowProjectionMatrix = shadowProjectionMatrix
         uniforms[0].shadowViewMatrix = float4x4(eye: sunPosition, center: [0, 0, 0], up: [0, 1, 0])
@@ -360,40 +477,59 @@ class Renderer: NSObject, MTKViewDelegate {
                 shadowEncoder.endEncoding()
             }
             
-            /// Delay getting the currentRenderPassDescriptor until we absolutely need it to avoid
-            ///   holding onto the drawable and blocking the display pipeline any longer than necessary
             let renderPassDescriptor = view.currentRenderPassDescriptor
             
-            if let renderPassDescriptor = renderPassDescriptor, let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) {
+            if let renderPassDescriptor {
+                renderPassDescriptor.colorAttachments[1].texture = albedoTexture
+                renderPassDescriptor.colorAttachments[1].loadAction = .clear
+                renderPassDescriptor.colorAttachments[1].storeAction = .dontCare
+                renderPassDescriptor.colorAttachments[2].texture = normalTexture
+                renderPassDescriptor.colorAttachments[2].loadAction = .clear
+                renderPassDescriptor.colorAttachments[2].storeAction = .dontCare
+                renderPassDescriptor.depthAttachment.texture = depthTexture
+                renderPassDescriptor.depthAttachment.storeAction = .dontCare
+                renderPassDescriptor.stencilAttachment.texture = depthTexture
+                renderPassDescriptor.stencilAttachment.storeAction = .dontCare
                 
-                /// Final pass rendering code here
-                renderEncoder.label = "Primary Render Encoder"
-                
-                
-                renderEncoder.setCullMode(.front)
-                
-                renderEncoder.setFrontFacing(.counterClockwise)
-                
-                renderEncoder.setRenderPipelineState(pipelineState)
-                
-                renderEncoder.setDepthStencilState(depthState)
-                
-                renderEncoder.setVertexBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
-                renderEncoder.setFragmentBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
-                renderEncoder.setFragmentTexture(shadowTexture, index: TextureIndex.shadow.rawValue)
-                
-                drawScene(renderEncoder: renderEncoder, showFloor: true)
-                
-                renderEncoder.pushDebugGroup("Draw light")
-                let m = float4x4(translation: sunPosition)
-                drawBox(modelMatrix: m, renderEncoder: renderEncoder, texture: pinkMap)
-                renderEncoder.popDebugGroup()
- 
-                
-                renderEncoder.endEncoding()
-                
-                if let drawable = view.currentDrawable {
-                    commandBuffer.present(drawable)
+                /// Delay getting the currentRenderPassDescriptor until we absolutely need it to avoid
+                ///   holding onto the drawable and blocking the display pipeline any longer than necessary
+                if let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) {
+                    
+                    /// Final pass rendering code here
+                    renderEncoder.label = "Primary Render Encoder"
+                    
+                    renderEncoder.setCullMode(.front)
+                    
+                    renderEncoder.setFrontFacing(.counterClockwise)
+                    
+                    renderEncoder.setRenderPipelineState(mainPipelineState)
+                    renderEncoder.setDepthStencilState(depthState)
+                    
+                    renderEncoder.setVertexBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
+                    renderEncoder.setFragmentBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
+                    renderEncoder.setFragmentTexture(shadowTexture, index: TextureIndex.shadow.rawValue)
+                    
+                    drawScene(renderEncoder: renderEncoder, showFloor: true)
+                    
+                    renderEncoder.pushDebugGroup("Draw light")
+                    let m = float4x4(translation: sunPosition)
+                    drawBox(modelMatrix: m, renderEncoder: renderEncoder, texture: pinkMap)
+                    renderEncoder.popDebugGroup()
+                    
+                    renderEncoder.pushDebugGroup("Draw Quad")
+                    renderEncoder.setRenderPipelineState(quadPipelineState)
+                    renderEncoder.setDepthStencilState(quadDepthState)
+                    renderEncoder.drawPrimitives(
+                        type: .triangle,
+                        vertexStart: 0,
+                        vertexCount: 6)
+                    renderEncoder.popDebugGroup()
+                    
+                    renderEncoder.endEncoding()
+                    
+                    if let drawable = view.currentDrawable {
+                        commandBuffer.present(drawable)
+                    }
                 }
             }
             
@@ -495,6 +631,10 @@ class Renderer: NSObject, MTKViewDelegate {
         }
         shadowProjectionMatrix = orthographicMatrix(left: -w, right: w, bottom: -h, top: h, near: 0.01, far: 100)
         shadowTexture = Self.makeTexture(device: device, width: 2048, height: 2048, pixelFormat: .depth32Float, usage: [.shaderRead, .renderTarget], storageMode: .private)
+        
+        albedoTexture = Self.makeTexture(device: device, width: size.width, height: size.height, pixelFormat: .bgra8Unorm, usage: [.shaderRead, .renderTarget], storageMode: .memoryless)
+        normalTexture = Self.makeTexture(device: device, width: size.width, height: size.height, pixelFormat: .rgba32Float, usage: [.shaderRead, .renderTarget], storageMode: .memoryless)
+        depthTexture = Self.makeTexture(device: device, width: size.width, height: size.height, pixelFormat: .depth32Float_stencil8, usage: [.shaderRead, .renderTarget], storageMode: .memoryless)
     }
 }
 
