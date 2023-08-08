@@ -436,10 +436,11 @@ class Renderer: NSObject, MTKViewDelegate {
         
         uniforms[0].projectionMatrix = projectionMatrix
         
-        let viewMatrix = matrix4x4_translation(0.0, 0.0, 18.0)
+        let viewMatrix = matrix4x4_translation(0.0, -1.0, 18.0) * matrix4x4_rotation(radians: .pi / 180 * -20, axis: SIMD3<Float>(1, 0, 0))
+        
         uniforms[0].viewMatrix = viewMatrix
-//        rotation += 0.01
-        rotation = .pi / 1
+        rotation += 0.01
+//        rotation = .pi / 3
         
         uniforms[0].shadowProjectionMatrix = shadowProjectionMatrix
         uniforms[0].shadowViewMatrix = float4x4(eye: sunPosition, center: [0, 0, 0], up: [0, 1, 0])
